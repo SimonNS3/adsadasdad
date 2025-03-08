@@ -1,891 +1,762 @@
-local JustHub = loadstring(game:HttpGet('https://raw.githubusercontent.com/Lilith-VnK/JustHub-UI/refs/heads/main/TestingUpdateUI/JustHub%20(2).lua'))()
-
-JustHub:InitializeUI({
-    Name = "Justhub UI",
-    SubTitle = "Version 1.0",
-    Theme = "Midnight"
-})
-wait(6)
-
-if not JustHub.Window then
-	warn("Window belum dibuat.")
-	return
-end
-
-local window = JustHub.Window
-
 local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local VirtualInputManager = game:GetService("VirtualInputManager")
-local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local player = Players.LocalPlayer
 local TweenService = game:GetService("TweenService")
+local ballServiceRemote = ReplicatedStorage:WaitForChild("Packages"):WaitForChild("Knit"):WaitForChild("Services"):WaitForChild("BallService"):WaitForChild("RE"):WaitForChild("Shoot")
+local slideRemote = ReplicatedStorage:WaitForChild("Packages"):WaitForChild("Knit"):WaitForChild("Services"):WaitForChild("BallService"):WaitForChild("RE"):WaitForChild("Slide")
+local character = player.Character or player.CharacterAdded:Wait()
+local rootPart = character:WaitForChild("HumanoidRootPart")
+local humanoid = character:WaitForChild("Humanoid")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local Camera = Workspace.CurrentCamera
+local FootballESPEnabled = false
+local Lines = {}
+local Quads = {}
+local homeGoalPosition = Vector3.new(325, 20, -49)
+local awayGoalPosition = Vector3.new(-247, 18, -50)
+local autofarmEnabled = false
+local autoGoalEnabled = false
+local autoStealEnabled = false
+local autoTPBallEnabled = false
+local autoJoinRandomTeamEnabled = false
+local autoJoinHomeEnabled = false
+local autoJoinAwayEnabled = false
+local roles = {"CF", "GK", "LW", "RW", "CM"}
+local teams = {"Home", "Away"}
+local selectedTeam = "Home"
+local selectedRole = "CF"
 
-local LocalPlayer = Players.LocalPlayer
-if not LocalPlayer then
-    warn("Player tidak ditemukan! Script dihentikan.")
-    return
-end
-
-local Cooldown = 0
-local IsParried = false
-local Connection = nil
-local LastSpamTime = 0
-local BaseSpamInterval = 0.1
-
-
-local MobileOptimized = false
-local lastOptimizedTime = 0
-
-local DEBUG_MODE = true
-local function DebugLog(message)
-    if DEBUG_MODE then
-        print("[DEBUG]: " .. message)
+local function ClearESP()
+    for _, line in pairs(Lines) do
+        if line then line:Remove() end
     end
-end
+    Lines = {}
 
-local function validateCharacter()
-    if not LocalPlayer.Character then return false, "Character belum tersedia" end
-    if not LocalPlayer.Character:FindFirstChildOfClass("Humanoid") then return false, "Humanoid tidak ditemukan" end
-    if not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then return false, "HumanoidRootPart tidak ditemukan" end
-    return true
-end
-
-local function safeCall(fn, ...)
-    local success, result = pcall(fn, ...)
-    if not success then
-        warn("[SafeCall] Error:", result)
-        return nil
+    for _, quad in pairs(Quads) do
+        if quad then quad:Remove() end
     end
-    return result
+    Quads = {}
 end
 
-local function clamp(x, minVal, maxVal)
-    if x < minVal then return minVal end
-    if x > maxVal then return maxVal end
-    return x
+local function DrawLine(From, To)
+    local FromScreen, FromVisible = Camera:WorldToViewportPoint(From)
+    local ToScreen, ToVisible = Camera:WorldToViewportPoint(To)
+
+    if not (FromVisible or ToVisible) then return end
+
+    local FromPos = Vector2.new(FromScreen.X, FromScreen.Y)
+    local ToPos = Vector2.new(ToScreen.X, ToScreen.Y)
+
+    local Line = Drawing.new("Line")
+    Line.Thickness = 1
+    Line.From = FromPos
+    Line.To = ToPos
+    Line.Color = Color3.fromRGB(255, 255, 255)
+    Line.Transparency = 1
+    Line.Visible = true
+
+    table.insert(Lines, Line)
 end
 
-local function getPingValue()
-    local ping = 0
-    pcall(function()
-        ping = game:GetService("Stats").Network.ServerStatsItem["Data Ping"].Value / 1000
-    end)
-    return ping
+local function DrawQuad(PosA, PosB, PosC, PosD)
+    local PosAScreen, PosAVisible = Camera:WorldToViewportPoint(PosA)
+    local PosBScreen, PosBVisible = Camera:WorldToViewportPoint(PosB)
+    local PosCScreen, PosCVisible = Camera:WorldToViewportPoint(PosC)
+    local PosDScreen, PosDVisible = Camera:WorldToViewportPoint(PosD)
+
+    if not (PosAVisible or PosBVisible or PosCVisible or PosDVisible) then return end
+
+    local Quad = Drawing.new("Quad")
+    Quad.PointA = Vector2.new(PosAScreen.X, PosAScreen.Y)
+    Quad.PointB = Vector2.new(PosBScreen.X, PosBScreen.Y)
+    Quad.PointC = Vector2.new(PosCScreen.X, PosCScreen.Y)
+    Quad.PointD = Vector2.new(PosDScreen.X, PosDScreen.Y)
+    Quad.Color = Color3.fromRGB(255, 255, 255)
+    Quad.Thickness = 0.5
+    Quad.Filled = true
+    Quad.Transparency = 0.25
+    Quad.Visible = true
+
+    table.insert(Quads, Quad)
 end
 
-local function NetworkLatencyAdjustment()
-    local ping = getPingValue()
-    if ping > 0.2 then
-        return (ping - 0.2)
-    else
-        return 0
-    end
-end
+local function GetCorners(Part)
+    local CF, Size = Part.CFrame, Part.Size / 2
+    local Corners = {}
 
-local angleDifferences = {}
-local maxStoredAngles = 5
-local baseCurveThreshold = math.rad(10)
-local previousVelocity = nil
-
-local function GetDynamicCurveThreshold(speed)
-    local baseThreshold = baseCurveThreshold
-    if speed > 50 then
-        local factor = clamp(1 - ((speed - 50) / 150), 0.5, 1)
-        return baseThreshold * factor
-    else
-        return baseThreshold
-    end
-end
-
-local function UpdateAngleDifference(currentVelocity)
-    local angleDiff = 0
-    if previousVelocity then
-        local magProduct = currentVelocity.Magnitude * previousVelocity.Magnitude
-        if magProduct > 0 then
-            local dotVal = currentVelocity:Dot(previousVelocity) / magProduct
-            dotVal = clamp(dotVal, -1, 1)
-            angleDiff = math.acos(dotVal)
-        end
-    end
-    previousVelocity = currentVelocity
-    table.insert(angleDifferences, angleDiff)
-    if #angleDifferences > maxStoredAngles then
-        table.remove(angleDifferences, 1)
-    end
-    return angleDiff
-end
-
-local function IsAccelerationHigh(currentVelocity)
-    local accDiff = 0
-    if previousVelocity then
-        accDiff = math.abs(currentVelocity.Magnitude - previousVelocity.Magnitude)
-    end
-    local accelerationThreshold = 5
-    if accDiff > accelerationThreshold then
-        DebugLog("Deteksi percepatan mendadak: " .. tostring(accDiff))
-        return true
-    end
-    return false
-end
-
-local function IsBallCurving(currentVelocity)
-    if IsAccelerationHigh(currentVelocity) then
-        return true
-    end
-    local currentAngleDiff = UpdateAngleDifference(currentVelocity)
-    local sum = 0
-    for _, a in ipairs(angleDifferences) do
-        sum = sum + a
-    end
-    local averageAngle = (#angleDifferences > 0) and (sum / #angleDifferences) or 0
-    local dynamicThreshold = GetDynamicCurveThreshold(currentVelocity.Magnitude)
-    DebugLog("Rata-rata perbedaan sudut: " .. tostring(math.deg(averageAngle)) .. "°, Dynamic threshold: " .. tostring(math.deg(dynamicThreshold)) .. "°")
-    return averageAngle > dynamicThreshold
-end
-
-local function CountNearbyPlayers(radius)
-    local count = 0
-    local localHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-    if not localHRP then return count end
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-            local otherHRP = player.Character.HumanoidRootPart
-            local dist = (localHRP.Position - otherHRP.Position).Magnitude
-            if dist <= radius then
-                count = count + 1
+    for X = -1, 1, 2 do
+        for Y = -1, 1, 2 do
+            for Z = -1, 1, 2 do
+                table.insert(Corners, (CF * CFrame.new(Size * Vector3.new(X, Y, Z))).Position)
             end
         end
     end
-    return count
+
+    return Corners
 end
 
-local ToggleSystem = {
-    NormalMode = false,
-    SpamMode = false,
-    AdvancedMode = false,
-    HybridParry = false,
-    MultipleParry = false,
-    KalmanParry = false
-}
+local function DrawFootballESP(Football)
+    local Corners = GetCorners(Football)
 
-local function GetBall()
-    local ballsFolder = workspace:FindFirstChild("Balls")
-    if not ballsFolder then return nil end
-    for _, ball in ipairs(ballsFolder:GetChildren()) do
-        if ball:GetAttribute("realBall") then
-            return ball
-        end
-    end
-    return nil
+    DrawLine(Corners[1], Corners[2])
+    DrawLine(Corners[2], Corners[4])
+    DrawLine(Corners[4], Corners[3])
+    DrawLine(Corners[3], Corners[1])
+
+    DrawLine(Corners[5], Corners[6])
+    DrawLine(Corners[6], Corners[8])
+    DrawLine(Corners[8], Corners[7])
+    DrawLine(Corners[7], Corners[5])
+
+    DrawLine(Corners[1], Corners[5])
+    DrawLine(Corners[2], Corners[6])
+    DrawLine(Corners[3], Corners[7])
+    DrawLine(Corners[4], Corners[8])
+
+    DrawQuad(Corners[1], Corners[2], Corners[6], Corners[5])
+    DrawQuad(Corners[3], Corners[4], Corners[8], Corners[7])
+    DrawQuad(Corners[1], Corners[3], Corners[7], Corners[5])
+    DrawQuad(Corners[2], Corners[4], Corners[8], Corners[6])
 end
 
-local function ResetConnection()
-    if Connection then
-        Connection:Disconnect()
-        Connection = nil
-    end
-end
+local function FootballESP()
+    ClearESP()
 
-workspace.Balls.ChildAdded:Connect(function()
-    local ball = GetBall()
-    if not ball then return end
-    ResetConnection()
-    previousVelocity = nil 
-    local anticipated = false
-    Connection = ball:GetAttributeChangedSignal("target"):Connect(function()
-        local target = ball:GetAttribute("target")
-        if target == LocalPlayer.Name then
-            IsParried = false
-            anticipated = false
-            DebugLog("Target berubah: Bola kini mengarah ke pemain!")
-        else
-            if IsParried and not anticipated then
-                local targetPlayer = game:GetService("Players"):FindFirstChild(target)
-                if targetPlayer and targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart") and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
-                    local distBetweenPlayers = (LocalPlayer.Character.HumanoidRootPart.Position - targetPlayer.Character.HumanoidRootPart.Position).Magnitude
-                    if distBetweenPlayers < 10 then
-                        DebugLog("Anticipation Parry: Target (" .. target .. ") dekat (" .. tostring(distBetweenPlayers) .. " studs).")
-                        Parry()
-                        anticipated = true
-                    end
-                end
-            end
-        end
-    end)
-end)
-
-local function GetBallVelocity(ball)
-    local velocity = nil
-    local success, result = pcall(function() return ball.AssemblyLinearVelocity end)
-    if success and typeof(result) == "Vector3" then
-        velocity = result
-    else
-        local zoomies = ball:FindFirstChild("zoomies")
-        if zoomies and zoomies:IsA("Vector3Value") then
-            velocity = zoomies.Value
-        end
-    end
-    return velocity
-end
-
-local function Parry()
-    if IsParried then return end
-    VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
-    task.wait(0.005)
-    VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
-    IsParried = true
-    Cooldown = tick()
-    DebugLog("Parry dilakukan!")
-end
-
-local advancedPredictions = {}
-local function AdvancedAutoParry(Speed, Distance)
-    local pingValue = getPingValue() or 0
-    local predictedTime = Distance / math.max(Speed, 0.01)
-    table.insert(advancedPredictions, predictedTime)
-    if #advancedPredictions > 5 then
-        table.remove(advancedPredictions, 1)
-    end
-    local sumTime = 0
-    for _, t in ipairs(advancedPredictions) do
-        sumTime = sumTime + t
-    end
-    local avgPredictedTime = sumTime / #advancedPredictions
-
-    local baseReactionDelay = 0.3
-    local speedAdjustment = clamp(0.5 - 0.002 * Speed, 0.2, 0.5)
-    local latencyAdjustment = pingValue * 0.5
-    local reactionThreshold = baseReactionDelay + speedAdjustment - latencyAdjustment
-
-    local networkAdjustment = NetworkLatencyAdjustment()
-    reactionThreshold = reactionThreshold + networkAdjustment
-
-    if Speed > 100 then
-        reactionThreshold = reactionThreshold * 0.8
-    end
-
-    DebugLog("Advanced Parry: avgPredictedTime = " .. tostring(avgPredictedTime) ..
-             ", reactionThreshold = " .. tostring(reactionThreshold) ..
-             ", Speed = " .. tostring(Speed) ..
-             ", Distance = " .. tostring(Distance) ..
-             ", Ping = " .. tostring(pingValue))
-    
-    return avgPredictedTime < reactionThreshold
-end
-
-local function HybridParry(Speed, Distance)
-    local freezeThreshold = 1
-    if Speed < freezeThreshold then
-        DebugLog("Hybrid Parry: Skill freeze terdeteksi (Speed = " .. tostring(Speed) .. "), skip parry.")
-        return false
-    end
-
-    local normalValue = Distance / math.max(Speed, 0.01)
-    local normalThreshold = 0.55
-
-    local baseReactionDelay = 0.3
-    local speedAdjustment = clamp(0.5 - 0.002 * Speed, 0.2, 0.5)
-    local latencyAdjustment = getPingValue() * 0.5
-    local advancedThreshold = baseReactionDelay + speedAdjustment - latencyAdjustment
-
-    local networkAdjustment = NetworkLatencyAdjustment()
-    advancedThreshold = advancedThreshold + networkAdjustment
-
-    if Speed > 100 then
-        advancedThreshold = advancedThreshold * 0.8
-    end
-
-    local combinedThreshold = (normalThreshold + advancedThreshold) / 2
-
-    local nearbyCount = CountNearbyPlayers(20) 
-    if nearbyCount > 0 then
-        DebugLog("Nearby players count: " .. nearbyCount)
-        combinedThreshold = math.max(combinedThreshold - 0.05 * nearbyCount, 0.3)
-    end
-
-    if Distance < 10 then
-        DebugLog("Hybrid Parry: Kondisi spam terpenuhi (Distance < 10).")
-        return true
-    end
-
-    DebugLog("Hybrid Parry: normalValue = " .. tostring(normalValue) ..
-             ", combinedThreshold = " .. tostring(combinedThreshold))
-    
-    return normalValue <= combinedThreshold
-end
-
-local kalmanEstimate = 0
-local kalmanP = 1
-local kalmanQ = 0.1
-local kalmanR = 0.05
-local lastFrameTime = tick()
-
-local function updateKalman(measurement)
-    local kalmanK = kalmanP / (kalmanP + kalmanR)
-    kalmanEstimate = kalmanEstimate + kalmanK * (measurement - kalmanEstimate)
-    kalmanP = (1 - kalmanK) * kalmanP + kalmanQ
-    return kalmanEstimate
-end
-
-local function KalmanParry(Speed, Distance)
-    local measurement = Distance / math.max(Speed, 0.01)
-    if kalmanEstimate == 0 then
-        kalmanEstimate = measurement
-    end
-    local currentFrameTime = tick()
-    local dt = currentFrameTime - lastFrameTime
-    lastFrameTime = currentFrameTime
-    if dt > 0.1 then
-        kalmanR = 0.2
-    else
-        kalmanR = 0.05
-    end
-    local predictedTime = updateKalman(measurement)
-    DebugLog("Kalman Parry: predictedTime = " .. tostring(predictedTime))
-    local reactionThreshold = 0.35
-    return predictedTime < reactionThreshold
-end
-
-local function RunMultipleParryMode()
-    local ballsFolder = workspace:FindFirstChild("Balls")
-    if not ballsFolder then return end
-    if not validateCharacter() then return end
-    local HRP = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-    if not HRP then return end
-
-    for _, ball in ipairs(ballsFolder:GetChildren()) do
-        if ball:GetAttribute("realBall") and ball:GetAttribute("target") == LocalPlayer.Name then
-            local distance = (HRP.Position - ball.Position).Magnitude
-            if distance < 20 then
-                Parry()
-                task.wait(0.05)
-            end
-        end
+    local Football = Workspace:FindFirstChild("Football")
+    if Football and Football:IsA("BasePart") and FootballESPEnabled then
+        DrawFootballESP(Football)
     end
 end
 
-local previousSpamDistance = nil
+local function hasBall()
+    return character:FindFirstChild("Football") ~= nil
+end
 
-RunService.PreSimulation:Connect(function()
-    if MobileOptimized then
-        local currentTime = tick()
-        if currentTime - lastOptimizedTime < 0.05 then
-            return
-        else
-            lastOptimizedTime = currentTime
-        end
-    end
+local function checkTeam()
+    local team = player.Team
+    return team and team.Name ~= "Visitor"
+end
 
-    if ToggleSystem.MultipleParry then
-        RunMultipleParryMode()
-        return
-    end
-
-    local ball = GetBall()
-    if not ball then return end
-    if ball:GetAttribute("target") ~= LocalPlayer.Name then return end
-
-    local character = LocalPlayer.Character
-    if not character then return end
-
-    local HRP = character:FindFirstChild("HumanoidRootPart")
-    if not HRP then return end
-
-    local ballVelocity = GetBallVelocity(ball)
-    if not ballVelocity or typeof(ballVelocity) ~= "Vector3" then
-        DebugLog("Tidak bisa mendapatkan kecepatan bola!")
-        return
-    end
-
-    if ballVelocity.Y > 50 and ballVelocity.Magnitude > 150 then
-        DebugLog("Special Skill Detected: Bola spin upward dan kecepatan tinggi!")
-        Parry()
-        return
-    end
-
-    if IsBallCurving(ballVelocity) then
-        DebugLog("Deteksi Curve: Bola sedang melengkung!")
-        local curvingThreshold = 15
-        local distanceCurve = (HRP.Position - ball.Position).Magnitude
-        if distanceCurve < curvingThreshold then
-            DebugLog("Anticipation Parry karena bola melengkung dan jarak (" .. tostring(distanceCurve) .. " studs) dekat!")
-            Parry()
-            return
-        end
-    end
-
-    local Speed = ballVelocity.Magnitude
-    local Distance = (HRP.Position - ball.Position).Magnitude
-
-    if previousSpamDistance then
-        if Distance > previousSpamDistance * 2 or Distance < previousSpamDistance / 2 then
-            DebugLog("Outlier detected in Distance: " .. tostring(Distance) .. " vs previous " .. tostring(previousSpamDistance))
-            previousSpamDistance = Distance
-            return
-        end
-    end
-    previousSpamDistance = Distance
-
-    local directionToPlayer = (HRP.Position - ball.Position).Unit
-    local ballDir = ballVelocity.Unit
-    local angleBetween = math.acos(clamp(ballDir:Dot(directionToPlayer), -1, 1))
-    local trajectoryAngleThreshold = math.rad(45)
-    if angleBetween > trajectoryAngleThreshold then
-        DebugLog("Trajectory validation failed: angle = " .. tostring(math.deg(angleBetween)) .. "° exceeds threshold")
-        return
-    end
-
-    if ToggleSystem.KalmanParry then
-        if KalmanParry(Speed, Distance) then
-            Parry()
-        end
-        return
-    end
-
-    if ToggleSystem.HybridParry then
-        if HybridParry(Speed, Distance) then
-            Parry()
-        end
-        return
-    end
-
-    if ToggleSystem.AdvancedMode then
-        if AdvancedAutoParry(Speed, Distance) then
-            Parry()
-        end
-        return
-    end
-
-    if ToggleSystem.SpamMode then
-        if not validateCharacter() then return end
-        local hum = LocalPlayer.Character
-        local HRP = hum:FindFirstChild("HumanoidRootPart")
-        if not HRP then return end
-        local currentDist = (ball.Position - HRP.Position).Magnitude
-        local ballVel = GetBallVelocity(ball)
-        if not ballVel then return end
-
-        local baseThreshold = 6
-        local dynamicOffset = ballVel.Magnitude * 0.05
-        local effectiveThreshold = baseThreshold + dynamicOffset
-
-        local spamSmoothedDistance = currentDist
-        if hum:FindFirstChild("SpamSmoothedDistance") then
-            spamSmoothedDistance = hum.SpamSmoothedDistance.Value
-        end
-        local alpha = 0.8
-        spamSmoothedDistance = alpha * spamSmoothedDistance + (1 - alpha) * currentDist
-        if not hum:FindFirstChild("SpamSmoothedDistance") then
-            local spamDistanceValue = Instance.new("NumberValue", hum)
-            spamDistanceValue.Name = "SpamSmoothedDistance"
-            spamDistanceValue.Value = spamSmoothedDistance
-        else
-            hum.SpamSmoothedDistance.Value = spamSmoothedDistance
+local function autoGoal()
+    while autoGoalEnabled do
+        if not checkTeam() or not hasBall() then
+            task.wait()
+            continue
         end
 
-        local relativeSpeed = ballVel.Magnitude - HRP.Velocity.Magnitude
-
-        if not hum:FindFirstChild("SpamConditionStart") then
-            local conditionStart = Instance.new("NumberValue", hum)
-            conditionStart.Name = "SpamConditionStart"
-            conditionStart.Value = 0
-        end
-
-        if spamSmoothedDistance <= effectiveThreshold and hum:FindFirstChild("Highlight") then
-            if hum.SpamConditionStart.Value == 0 then
-                hum.SpamConditionStart.Value = tick()
-            end
-            local conditionDuration = tick() - hum.SpamConditionStart.Value
-            if conditionDuration >= 0.2 or relativeSpeed > 5 then
-                DebugLog("Spam Parry Condition met: distance="..tostring(spamSmoothedDistance).." effectiveThreshold="..tostring(effectiveThreshold).." relativeSpeed="..tostring(relativeSpeed))
-                Parry()
-                hum.SpamConditionStart.Value = tick()
-            end
-        else
-            hum.SpamConditionStart.Value = 0
-        end
-        return
-    end
-
-    if ToggleSystem.NormalMode then
-        if IsParried and (tick() - Cooldown) < 1 then return end
-        if (Distance / math.max(Speed, 0.01)) <= 0.55 then
-            Parry()
-        end
-    end
-end)
-
-RunService.RenderStepped:Connect(function(dt)
-    local ball = GetBall()
-    if ball and ball:GetAttribute("target") ~= LocalPlayer.Name then
-        if validateCharacter() then
-            local localHRP = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-            local targetPlayer = game:GetService("Players"):FindFirstChild(ball:GetAttribute("target"))
-            if targetPlayer and targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart") then
-                local targetHRP = targetPlayer.Character.HumanoidRootPart
-                local dist = (localHRP.Position - targetHRP.Position).Magnitude
-                if dist < 10 then
-                    DebugLog("Anticipation Parry (Local Movement): Local player mendekati target (" .. tostring(dist) .. " studs).")
-                    Parry()
-                end
-            end
-        end
-    end
-end)
-
-local statusGui = Instance.new("ScreenGui")
-statusGui.Name = "StatusGui"
-statusGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
-statusGui.Enabled = true
-
-local statusFrame = Instance.new("Frame")
-statusFrame.Size = UDim2.new(0, 200, 0, 120)
-statusFrame.Position = UDim2.new(0, 100, 0, 100)
-statusFrame.BackgroundTransparency = 0.3
-statusFrame.BackgroundColor3 = Color3.new(0, 0, 0)
-statusFrame.Active = true
-statusFrame.Parent = statusGui
-
-local targetLabel = Instance.new("TextLabel")
-targetLabel.Size = UDim2.new(1, 0, 0, 20)
-targetLabel.Position = UDim2.new(0, 0, 0, 0)
-targetLabel.BackgroundTransparency = 1
-targetLabel.TextColor3 = Color3.new(1, 1, 1)
-targetLabel.TextScaled = true
-targetLabel.Text = "Target: N/A"
-targetLabel.Parent = statusFrame
-
-local speedLabel = Instance.new("TextLabel")
-speedLabel.Size = UDim2.new(1, 0, 0, 20)
-speedLabel.Position = UDim2.new(0, 0, 0, 22)
-speedLabel.BackgroundTransparency = 1
-speedLabel.TextColor3 = Color3.new(1, 1, 1)
-speedLabel.TextScaled = true
-speedLabel.Text = "Speed: N/A"
-speedLabel.Parent = statusFrame
-
-local distanceLabel = Instance.new("TextLabel")
-distanceLabel.Size = UDim2.new(1, 0, 0, 20)
-distanceLabel.Position = UDim2.new(0, 0, 0, 44)
-distanceLabel.BackgroundTransparency = 1
-distanceLabel.TextColor3 = Color3.new(1, 1, 1)
-distanceLabel.TextScaled = true
-distanceLabel.Text = "Distance: N/A"
-distanceLabel.Parent = statusFrame
-
-local curveLabel = Instance.new("TextLabel")
-curveLabel.Size = UDim2.new(1, 0, 0, 20)
-curveLabel.Position = UDim2.new(0, 0, 0, 66)
-curveLabel.BackgroundTransparency = 1
-curveLabel.TextColor3 = Color3.new(1, 1, 1)
-curveLabel.TextScaled = true
-curveLabel.Text = "Curve: N/A"
-curveLabel.Parent = statusFrame
-
-local suggestionLabel = Instance.new("TextLabel")
-suggestionLabel.Size = UDim2.new(1, 0, 0, 20)
-suggestionLabel.Position = UDim2.new(0, 0, 0, 88)
-suggestionLabel.BackgroundTransparency = 1
-suggestionLabel.TextColor3 = Color3.new(1, 1, 1)
-suggestionLabel.TextScaled = true
-suggestionLabel.Text = "Suggestion: N/A"
-suggestionLabel.Parent = statusFrame
-
-local dragging = false
-local dragInput, dragStart, startPos
-
-statusFrame.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        dragging = true
-        dragStart = input.Position
-        startPos = statusFrame.AbsolutePosition
-        input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then
-                dragging = false
-            end
-        end)
-    end
-end)
-
-statusFrame.InputChanged:Connect(function(input)
-    if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-        local delta = input.Position - dragStart
-        statusFrame.Position = UDim2.new(0, startPos.X + delta.X, 0, startPos.Y + delta.Y)
-    end
-end)
-
-RunService.RenderStepped:Connect(function()
-    local ball = GetBall()
-    if ball then
-        local targetAttr = ball:GetAttribute("target") or "N/A"
-        targetLabel.Text = "Target: " .. tostring(targetAttr)
+        local team = player.Team
+        local goalPosition = team.Name == "Home" and awayGoalPosition or homeGoalPosition
         
-        local ballVel = GetBallVelocity(ball)
-        if ballVel then
-            speedLabel.Text = "Speed: " .. string.format("%.2f", ballVel.Magnitude)
-        else
-            speedLabel.Text = "Speed: N/A"
-        end
+        rootPart:PivotTo(CFrame.new(goalPosition))
+        task.wait(0.1)
+        
+        ballServiceRemote:FireServer(1, nil, nil, Vector3.new(-0.8986, -0.3108, 0.3097))
+        task.wait()
+    end
+end
 
-        if validateCharacter() then
-            local HRP = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-            if HRP and ball then
-                local dist = (HRP.Position - ball.Position).Magnitude
-                distanceLabel.Text = "Distance: " .. string.format("%.2f", dist)
-            else
-                distanceLabel.Text = "Distance: N/A"
+local function autoSteal()
+    while autoStealEnabled do
+        local targetPlayer, closestDistance = nil, math.huge
+        
+        for _, otherPlayer in ipairs(Players:GetPlayers()) do
+            if otherPlayer == player then continue end
+            
+            local otherCharacter = otherPlayer.Character
+            if not otherCharacter or not otherCharacter:FindFirstChild("Football") then continue end
+            
+            local distance = (rootPart.Position - otherCharacter.HumanoidRootPart.Position).Magnitude
+            if distance < closestDistance then
+                closestDistance = distance
+                targetPlayer = otherPlayer
             end
         end
-
-        if ballVel then
-            local curving = IsBallCurving(ballVel)
-            curveLabel.Text = "Curve: " .. (curving and "Yes" or "No")
-        else
-            curveLabel.Text = "Curve: N/A"
+        
+        if targetPlayer then
+            rootPart:PivotTo(targetPlayer.Character.HumanoidRootPart.CFrame)
+            slideRemote:FireServer(targetPlayer)
         end
+        
+        task.wait()
+    end
+end
 
-        if ballVel and validateCharacter() then
-            local HRP = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-            local dist = HRP and (HRP.Position - ball.Position).Magnitude or 0
-            local suggestion = "Parry Not Recommended"
-            if HybridParry(ballVel.Magnitude, dist) then
-                suggestion = "Parry Recommended"
+local function autoTPBall()
+    local ball
+    while autoTPBallEnabled do
+        ball = workspace:FindFirstChild("Football")
+        if ball then
+            rootPart:PivotTo(ball:GetPivot())
+        end
+        task.wait()
+    end
+end
+
+local function autoGoalKeeper()
+    local ball
+    while autoGoalKeeperEnabled do
+        ball = workspace:FindFirstChild("Football")
+        if ball and ball.AssemblyLinearVelocity.Magnitude > 5 then
+            rootPart:PivotTo(CFrame.new(
+                ball.Position + (ball.AssemblyLinearVelocity * 0.1)
+            ))
+        end
+        task.wait()
+    end
+end
+
+local function autoBring()
+    while autoBringEnabled do
+        local ball = workspace:FindFirstChild("Football")
+        if ball then
+            local args = {[1] = ball}
+            game:GetService("ReplicatedStorage"):WaitForChild("Packages"):WaitForChild("Knit"):WaitForChild("Services"):WaitForChild("BallService"):WaitForChild("RE"):WaitForChild("Grab"):FireServer(unpack(args))
+        end
+        task.wait(0.1)
+    end
+end
+
+local function fly()
+    local flying = true
+    local flySpeed = 100
+    local maxFlySpeed = 1000
+    local speedIncrement = 0.4
+    local originalGravity = workspace.Gravity
+
+    player.CharacterAdded:Connect(function(newCharacter)
+        character = newCharacter
+        humanoid = character:WaitForChild("Humanoid")
+        rootPart = character:WaitForChild("HumanoidRootPart")
+    end)
+
+    local function randomizeValue(value, range)
+        return value + (value * (math.random(-range, range) / 100))
+    end
+
+    if flying then
+        workspace.Gravity = 0
+        task.spawn(function()
+            while flying do
+                local MoveDirection = Vector3.new()
+                local cameraCFrame = workspace.CurrentCamera.CFrame
+
+                MoveDirection = MoveDirection + (UserInputService:IsKeyDown(Enum.KeyCode.W) and cameraCFrame.LookVector or Vector3.new())
+                MoveDirection = MoveDirection - (UserInputService:IsKeyDown(Enum.KeyCode.S) and cameraCFrame.LookVector or Vector3.new())
+                MoveDirection = MoveDirection - (UserInputService:IsKeyDown(Enum.KeyCode.A) and cameraCFrame.RightVector or Vector3.new())
+                MoveDirection = MoveDirection + (UserInputService:IsKeyDown(Enum.KeyCode.D) and cameraCFrame.RightVector or Vector3.new())
+                MoveDirection = MoveDirection + (UserInputService:IsKeyDown(Enum.KeyCode.Space) and Vector3.new(0, 1, 0) or Vector3.new())
+                MoveDirection = MoveDirection - (UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) and Vector3.new(0, 1, 0) or Vector3.new())
+
+                if MoveDirection.Magnitude > 0 then
+                    flySpeed = math.min(flySpeed + speedIncrement, maxFlySpeed)
+                    MoveDirection = MoveDirection.Unit * math.min(randomizeValue(flySpeed, 10), maxFlySpeed)
+                    rootPart.Velocity = MoveDirection * 0.5
+                else
+                    rootPart.Velocity = Vector3.new(0, 0, 0)
+                end
+
+                RunService.RenderStepped:Wait()
+                if not flying then break end
             end
-            suggestionLabel.Text = "Suggestion: " .. suggestion
-        else
-            suggestionLabel.Text = "Suggestion: N/A"
-        end
+        end)
     else
-        targetLabel.Text = "Target: N/A"
-        speedLabel.Text = "Speed: N/A"
-        distanceLabel.Text = "Distance: N/A"
-        curveLabel.Text = "Curve: N/A"
-        suggestionLabel.Text = "Suggestion: N/A"
+        flying = false
+        flySpeed = 100
+        rootPart.Velocity = Vector3.new(0, 0, 0)
+        workspace.Gravity = originalGravity
     end
-end)
+end
 
-local Home = window:addTab("•Home")
-local ParryTab = Home:addSection("Home Section", 120)
+local function ClearTracer()
+    if tracer then
+        tracer:Remove()
+        tracer = nil
+    end
+end
 
-ParryTab:addToggle({
-    Name = "Normal Parry (50%)",
-    Default = false,
-    Callback = function(state)
-        ToggleSystem.NormalMode = state
-        if state then
-            ToggleSystem.SpamMode = false
-            ToggleSystem.AdvancedMode = false
-            ToggleSystem.HybridParry = false
-            ToggleSystem.MultipleParry = false
-            ToggleSystem.KalmanParry = false
-            DebugLog("Mode Normal diaktifkan, mode lainnya dinonaktifkan.")
+local function ClearDistance()
+    if distanceText then
+        distanceText:Remove()
+        distanceText = nil
+    end
+end
+
+local function ClearFootballChams()
+    if highlight then
+        highlight:Destroy()
+        highlight = nil
+    end
+end
+
+local function ClearTeamESP()
+    for _, objects in pairs(teamEspObjects or {}) do
+        if objects.esp then objects.esp:Remove() end
+        if objects.highlight then objects.highlight:Destroy() end
+        if objects.nameTag then objects.nameTag:Remove() end
+    end
+    teamEspObjects = {}
+end
+
+local function ClearEnemyESP()
+    for _, objects in pairs(enemyEspObjects or {}) do
+        if objects.esp then objects.esp:Remove() end
+        if objects.highlight then objects.highlight:Destroy() end
+        if objects.nameTag then objects.nameTag:Remove() end
+    end
+    enemyEspObjects = {}
+end
+
+local function ClearPlayerESP()
+    for _, objects in pairs(playerEspObjects or {}) do
+        if objects.esp then objects.esp:Remove() end
+        if objects.highlight then objects.highlight:Destroy() end
+        if objects.nameTag then objects.nameTag:Remove() end
+    end
+    playerEspObjects = {}
+end
+
+local function aimlock()
+    while aimlockEnabled do
+        local ball = workspace:FindFirstChild("Football")
+        if ball then
+            local camera = workspace.CurrentCamera
+            if player.Character then
+                camera.CFrame = CFrame.new(camera.CFrame.Position, ball.Position)
+            end
+        end
+        task.wait()
+    end
+end
+
+RunService.RenderStepped:Connect(FootballESP)
+
+local playerEspObjects = {}
+local teamEspObjects = {}
+local enemyEspObjects = {}
+local tracer = nil
+local distanceText = nil
+local highlight = nil
+
+local Luna = loadstring(game:HttpGet("https://paste.ee/r/WSCKThwW", true))()
+
+
+local Window = Luna:CreateWindow({
+    Name = "The BillDev Hub (Blue Lock Rivals)",
+    Subtitle = "by Galaxy/Jah/Whohurtyoudear",
+    LogoID = "75237883871377",
+    LoadingEnabled = true,
+    LoadingTitle = "TheBillDevHub (Blue Lock Rivals)",
+    LoadingSubtitle = "by Galaxy/Jah/Whohurtyoudear",
+    ConfigSettings = {
+        RootFolder = "BillDevHub", -- Added root folder for better organization
+        ConfigFolder = "Configs", -- Changed to a dedicated configs folder
+        AutoLoadConfig = true -- Enable auto-loading of saved configurations
+    },
+})
+
+Window:CreateHomeTab({
+    SupportedExecutors = {"Delta", "Fluxus", "Codex", "Cryptic", "Vegax", "Trigon", "Synapse X", "Script-Ware", "KRNL", "Seliware", "Solara", "Xeno", "ZORARA", "Luna", "Nihon", "JJsploit", "AWP", "Wave", "Ronix"},
+    DiscordInvite = "https://discord.gg/D3T4ArjBqk",
+    Icon = 75237883871377,
+})
+local MainTab = Window:CreateTab({
+    Name = "Main",
+    Icon = "home_filled",
+    ImageSource = "Material",
+    ShowTitle = true
+})
+
+local CharacterTab = Window:CreateTab({
+    Name = "Local Player",
+    Icon = "account_circle",
+    ImageSource = "Material",
+    ShowTitle = true
+})
+
+local ESPTab = Window:CreateTab({
+    Name = "ESP",
+    Icon = "visibility",
+    ImageSource = "Material",
+    ShowTitle = true
+})
+
+local TeamTab = Window:CreateTab({
+    Name = "Team",
+    Icon = "group_work",
+    ImageSource = "Material",
+    ShowTitle = true
+})
+
+local StyleTab = Window:CreateTab({
+    Name = "Styles",
+    Icon = "brush",
+    ImageSource = "Material",
+    ShowTitle = true
+})
+
+local FlowTab = Window:CreateTab({
+    Name = "Flow",
+    Icon = "waves",
+    ImageSource = "Material",
+    ShowTitle = true
+})
+
+local CosmeticTab = Window:CreateTab({
+    Name = "Cosmetics",
+    Icon = "stars",
+    ImageSource = "Material",
+    ShowTitle = true
+})
+
+local UITab = Window:CreateTab({
+    Name = "UI Settings",
+    Icon = "settings_applications",
+    ImageSource = "Material",
+    ShowTitle = true
+})
+
+MainTab:CreateSection("Autofarm Features")
+
+MainTab:CreateToggle({
+    Name = "Autofarm All",
+    Description = "Enable all autofarm features",
+    CurrentValue = false,
+    Callback = function(Value)
+        autoGoalEnabled = Value
+        autoStealEnabled = Value
+        autoTPBallEnabled = Value
+        autoBringEnabled = Value
+        autoGoalKeeperEnabled = Value
+        
+        if Value then
+            task.spawn(autoGoal)
+            task.spawn(autoSteal)
+            task.spawn(autoTPBall)
+            task.spawn(autoBring)
+            task.spawn(autoGoalKeeper)
+        end
+    end
+})
+MainTab :CreateToggle({
+    Name = "Auto Steal",
+    Description = "Enable auto steal",
+    CurrentValue = false,
+    Callback = function(Value)
+        autoStealEnabled = Value
+        if Value then
+            task.spawn(autoSteal)
         else
-            DebugLog("Mode Normal dinonaktifkan.")
+            task.cancel(autoSteal)
         end
     end
 })
 
-ParryTab:addToggle({
-    Name = "Spam Parry (10%) (Not recommended)",
-    Default = false,
-    Callback = function(state)
-        ToggleSystem.SpamMode = state
-        if state then
-            ToggleSystem.NormalMode = false
-            ToggleSystem.AdvancedMode = false
-            ToggleSystem.HybridParry = false
-            ToggleSystem.MultipleParry = false
-            ToggleSystem.KalmanParry = false
-            DebugLog("Mode Spam diaktifkan, mode lainnya dinonaktifkan.")
-        else
-            DebugLog("Mode Spam dinonaktifkan.")
+MainTab:CreateToggle({
+    Name = "Auto Goal",
+    Description = "Automatically score goals when you have the ball",
+    CurrentValue = false,
+    Callback = function(Value)
+        autoGoalEnabled = Value
+        if Value then
+            task.spawn(autoGoal)
         end
     end
 })
 
-ParryTab:addToggle({
-    Name = "Advanced Auto Parry (55%)",
-    Default = false,
-    Callback = function(state)
-        ToggleSystem.AdvancedMode = state
-        if state then
-            ToggleSystem.NormalMode = false
-            ToggleSystem.SpamMode = false
-            ToggleSystem.HybridParry = false
-            ToggleSystem.MultipleParry = false
-            ToggleSystem.KalmanParry = false
-            DebugLog("Advanced Auto Parry diaktifkan, mode lainnya dinonaktifkan.")
-        else
-            DebugLog("Advanced Auto Parry dinonaktifkan.")
+MainTab:CreateToggle({
+    Name = "Auto TP Ball",
+    Description = "Automatically teleport to the ball",
+    CurrentValue = false,
+    Callback = function(Value)
+        autoTPBallEnabled = Value
+        if Value then
+            task.spawn(autoTPBall)
         end
     end
 })
 
-ParryTab:addToggle({
-    Name = "Hybrid Parry (80%) (recommended)",
-    Default = false,
-    Callback = function(state)
-        ToggleSystem.HybridParry = state
-        if state then
-            ToggleSystem.NormalMode = false
-            ToggleSystem.SpamMode = false
-            ToggleSystem.AdvancedMode = false
-            ToggleSystem.MultipleParry = false
-            ToggleSystem.KalmanParry = false
-            DebugLog("Hybrid Parry diaktifkan, mode lainnya dinonaktifkan.")
-        else
-            DebugLog("Hybrid Parry dinonaktifkan.")
+MainTab:CreateToggle({
+    Name = "Auto Goal Keeper",
+    Description = "Automatically move to block incoming balls",
+    CurrentValue = false,
+    Callback = function(Value)
+        autoGoalKeeperEnabled = Value
+        if Value then
+            task.spawn(autoGoalKeeper)
         end
     end
 })
 
-ParryTab:addToggle({
-    Name = "Multiple Parry (Dungeon Recommended)",
-    Default = false,
-    Callback = function(state)
-        ToggleSystem.MultipleParry = state
-        if state then
-            ToggleSystem.NormalMode = false
-            ToggleSystem.SpamMode = false
-            ToggleSystem.AdvancedMode = false
-            ToggleSystem.HybridParry = false
-            ToggleSystem.KalmanParry = false
-            DebugLog("Multiple Parry (Dungeon Recommended) diaktifkan.")
-        else
-            DebugLog("Multiple Parry (Dungeon Recommended) dinonaktifkan.")
-        end
-    end
-})
-
-ParryTab:addToggle({
-    Name = "Auto Parry V3 (Beta Test)",
-    Default = false,
-    Callback = function(state)
-        ToggleSystem.KalmanParry = state
-        if state then
-            ToggleSystem.NormalMode = false
-            ToggleSystem.SpamMode = false
-            ToggleSystem.AdvancedMode = false
-            ToggleSystem.HybridParry = false
-            ToggleSystem.MultipleParry = false
-            DebugLog("Auto Parry V3 diaktifkan, mode lainnya dinonaktifkan.")
-            kalmanEstimate = 0
-            kalmanP = 1
-        else
-            DebugLog("Auto Parry V3 dinonaktifkan.")
-        end
-    end
-})
-
-local Settings = window:addTab("•Settings")
-local SettingsTab = Settings:addSection("Settings", 120)
-
-local walkSpeedSlider = SettingsTab:addSlider({
-    Name = "WalkSpeed",
-    Min = 16,
-    Max = 500,
-    Default = 50,
-    Color = Color3.fromRGB(255,255,255),
+MainTab:CreateSlider({
+    Name = "Goal Keeper Prediction Distance",
+    Description = "Adjust the goal keeper prediction distance",
+    Range = {0, 100},
     Increment = 1,
-    ValueName = "WalkSpeed",
+    Suffix = "Studs",
+    CurrentValue = 50,
     Callback = function(Value)
-        if validateCharacter() then
-            LocalPlayer.Character.Humanoid.WalkSpeed = Value
-        end
-    end    
+        predictionDistance = Value
+    end,
 })
 
-local jumpPowerSlider = SettingsTab:addSlider({
-    Name = "JumpPower",
-    Min = 50,
-    Max = 500,
-    Default = 50,
-    Color = Color3.fromRGB(255,255,255),
-    Increment = 1,
-    ValueName = "JumpPower",
-    Callback = function(Value)
-        if validateCharacter() then
-            LocalPlayer.Character.Humanoid.JumpPower = Value
-        end
-    end    
-})
-
-SettingsTab:addToggle({
-    Name = "No Clip",
-    Default = false,
-    Callback = function(Value)
-        spawn(function()
-            while Value do
-                if validateCharacter() then
-                    for _, part in pairs(LocalPlayer.Character:GetChildren()) do
-                        if part:IsA("BasePart") then
-                            part.CanCollide = false
-                        end
-                    end
-                end
-                task.wait(0.1)
-            end
-        end)
-    end
-})
-
-SettingsTab:addToggle({
-    Name = "Walk On Water",
-    Default = false,
-    Callback = function(Value)
-        spawn(function()
-            while Value do
-                if validateCharacter() then
-                    local root = LocalPlayer.Character.HumanoidRootPart
-                    if root and root.Position.Y < 5 then
-                        root.Velocity = Vector3.new(root.Velocity.X, 2, root.Velocity.Z)
-                    end
-                end
-                task.wait(0.1)
-            end
-        end)
-    end
-})
-
-SettingsTab:addToggle({
-    Name = "Infinity Jump",
-    Default = false,
-    Callback = function(Value)
-        UserInputService.JumpRequest:Connect(function()
-            if Value and validateCharacter() then
-                LocalPlayer.Character.Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
-            end
-        end)
-    end
-})
-
-SettingsTab:addToggle({
-    Name = "Mobile Optimization",
-    Default = false,
-    Callback = function(Value)
-        MobileOptimized = Value
-        DebugLog("Mobile Optimization: " .. tostring(MobileOptimized))
-    end
-})
-
-SettingsTab:addButton({
-    Name = "Anti AFK",
+MainTab:CreateButton({
+    Name = "Bring Football",
+    Description = "Bring the football to you",
     Callback = function()
-        LocalPlayer.Idled:Connect(function()
-            safeCall(function()
-                local vu = game:GetService("VirtualUser")
-                vu:CaptureController()
-                vu:ClickButton2(Vector2.new())
-            end)
-        end)
+        local ball = workspace:FindFirstChild("Football")
+        if ball then
+            local args = {[1] = ball}
+            game:GetService("ReplicatedStorage").Packages.Knit.Services.BallService.RE.Grab:FireServer(unpack(args))
+        end
     end
 })
 
-SettingsTab:addDropdown({
- Name = "Theme",
- Items = {"Darker","Dark","Purple","Light","Neon","Forest","Aqua","Crimson","Solar","Pastel","Cyber","Ocean","Desert","Galaxy","Vintage","Rainbow","Midnight"},
- Default = "",
- Callback = function(choice)
-     JustHub:SetTheme(choice)
- end
+ESPTab:CreateSection("ESP Options")
+
+ESPTab:CreateToggle({
+    Name = "Football ESP",
+    Description = "Show football ESP overlay",
+    CurrentValue = false,
+    Callback = function(Value)
+        FootballESPEnabled = Value
+        if not Value then
+            ClearESP()
+        end
+    end
+})
+
+ESPTab:CreateToggle({
+    Name = "Player ESP",
+    Description = "Show player ESP overlay",
+    CurrentValue = false,
+    Callback = function(Value)
+        PlayerESPEnabled = Value
+        if not Value then
+            ClearPlayerESP()
+        end
+    end
+})
+
+ESPTab:CreateToggle({
+    Name = "Team ESP",
+    Description = "Show team ESP overlay",
+    CurrentValue = false,
+    Callback = function(Value)
+        TeamESPEnabled = Value
+        if not Value then
+            ClearTeamESP()
+        end
+    end
+})
+
+TeamTab:CreateSection("Team Selection")
+
+TeamTab:CreateDropdown({
+    Name = "Select Team",
+    Description = "Choose your team",
+    Options = {"Home", "Away"},
+    CurrentOption = {"Home"},
+    MultipleOptions = false,
+    Callback = function(Option)
+        selectedTeam = Option
+    end
+})
+
+TeamTab:CreateDropdown({
+    Name = "Select Role",
+    Description = "Choose your role",
+    Options = {"CF", "GK", "LW", "RW", "CM"},
+    CurrentOption = {"CF"},
+    MultipleOptions = false,
+    Callback = function(Option)
+        selectedRole = Option
+    end
+})
+
+TeamTab:CreateToggle({
+    Name = "Auto Join Home",
+    Description = "Automatically join home team",
+    CurrentValue = false,
+    Callback = function(Value)
+        autoJoinHomeEnabled = Value
+        if Value then
+            task.spawn(function()
+                while autoJoinHomeEnabled do
+                    if player.Team and player.Team.Name == "Visitor" then
+                        local args = {"Home", selectedRole or "CF"}
+                        game:GetService("ReplicatedStorage").Packages.Knit.Services.TeamService.RE.Select:FireServer(unpack(args))
+                    end
+                    task.wait(20)
+                end
+            end)
+        end
+    end
+})
+
+TeamTab:CreateToggle({
+    Name = "Auto Join Away",
+    Description = "Automatically join away team",
+    CurrentValue = false,
+    Callback = function(Value)
+        autoJoinAwayEnabled = Value
+        if Value then
+            task.spawn(function()
+                while autoJoinAwayEnabled do
+                    if player.Team and player.Team.Name == "Visitor" then
+                        local args = {"Away", selectedRole or "CF"}
+                        game:GetService("ReplicatedStorage").Packages.Knit.Services.TeamService.RE.Select:FireServer(unpack(args))
+                    end
+                    task.wait(20)
+                end
+            end)
+        end
+    end
+})
+
+CharacterTab:CreateSection("Character Modifications")
+
+CharacterTab:CreateToggle({
+    Name = "Infinite Stamina",
+    Description = "Never run out of stamina",
+    CurrentValue = false,
+    Callback = function(Value)
+        if Value then
+            player.PlayerStats.Stamina.Value = math.huge
+        else
+            player.PlayerStats.Stamina.Value = 100
+        end
+    end
+})
+
+CharacterTab:CreateToggle({
+    Name = "Noclip",
+    Description = "Walk through walls",
+    CurrentValue = false,
+    Callback = function(Value)
+        getgenv().noclip = Value
+    end
+})
+
+CharacterTab:CreateToggle({
+    Name = "Fly",
+    Description = "Enable flying",
+    CurrentValue = false,
+    Callback = function(Value)
+        if Value then
+            fly()
+        else
+            workspace.Gravity = 196.2
+        end
+    end
+})
+
+CharacterTab:CreateSlider({
+    Name = "CFrame Speed",
+    Description = "Adjust movement speed",
+    Range = {1, 500},
+    Increment = 1,
+    CurrentValue = 1,
+    Callback = function(Value)
+        getgenv().cframespeed = Value
+    end
+})
+
+CharacterTab:CreateButton({
+    Name = "Reset Character",
+    Description = "Reset your character",
+    Callback = function()
+        if player.Character then
+            player.Character:BreakJoints()
+        end
+    end
+})
+
+CharacterTab:CreateToggle({
+    Name = "Anti Ragdoll",
+    Description = "Prevent ragdolling",
+    CurrentValue = false,
+    Callback = function(Value)
+        antiRagdoll = Value
+        if Value then
+            task.spawn(function()
+                while antiRagdoll do
+                    if player.Character and player.Character:FindFirstChild("Ragdolled") then
+                        player.Character.Ragdolled:Destroy()
+                    end
+                    task.wait()
+                end
+            end)
+        end
+    end
+})
+
+StyleTab:CreateSection("Style Selection")
+
+StyleTab:CreateDropdown({
+    Name = "Select Style",
+    Description = "Choose your player style",
+    Options = {"Kunigami", "Aiku", "Karasu", "Otoya", "Bachira", "Chigiri", "Isagi", 
+              "Gagamaru", "King", "Nagi", "Rin", "Sae", "Shidou", "Reo", "Yukimiya", "Hiori"},
+    CurrentOption = {"Kunigami"},
+    MultipleOptions = false,
+    Callback = function(Option)
+        player.PlayerStats.Style.Value = Option
+    end
+})
+
+FlowTab:CreateSection("Flow Selection")
+
+FlowTab:CreateDropdown({
+    Name = "Select Flow",
+    Description = "Choose your flow ability",
+    Options = {
+        "Dribbler", "Prodigy", "Awakened Genius",
+        "Snake", "Wildcard", "Demon Wings",
+        "Trap", "Genius", "Chameleon",
+        "King's Instinct", "Gale Burst",
+        "Monster", "Puzzle", "Lightning"
+    },
+    CurrentOption = {"Dribbler"},
+    MultipleOptions = false,
+    Callback = function(Option)
+        if player and player:FindFirstChild("PlayerStats") and player.PlayerStats:FindFirstChild("Flow") then
+            player.PlayerStats.Flow.Value = Option
+        end
+    end
+})
+
+CosmeticTab:CreateSection("Cosmetic Selection")
+
+CosmeticTab:CreateLabel({
+    Name = "Cosmetics Soon Next Update"
+})
+
+UITab:CreateButton({
+    Name = "Destroy GUI",
+    Description = "Close the GUI",
+    Callback = function()
+        for _, connection in pairs(getconnections(game:GetService("CoreGui").ChildAdded)) do
+            connection:Disable()
+        end
+        game:GetService("CoreGui").Luna:Destroy()
+    end
+})
+
+UITab:CreateButton({
+    Name = "Rejoin Game",
+    Description = "Rejoin the current game",
+    Callback = function()
+        game:GetService("TeleportService"):TeleportToPlaceInstance(game.PlaceId, game.JobId)
+    end
+})
+UITab:BuildThemeSection()
+
+
+UITab:BuildConfigSection()
+Luna:Notification({
+    Title = "Config Loaded",
+    Content = "Your saved configuration has been automatically loaded.",
+    Icon = "check_circle",
+    ImageSource = "Material"
 })
